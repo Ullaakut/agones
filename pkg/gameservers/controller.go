@@ -105,7 +105,7 @@ type Controller struct {
 func NewController(
 	controllerHooks cloudproduct.ControllerHooksInterface,
 	health healthcheck.Handler,
-	minPort, maxPort int32,
+	minPort, maxPort int32, portPools []portallocator.PortPool,
 	sidecarImage string,
 	alwaysPullSidecarImage bool,
 	sidecarCPURequest resource.Quantity,
@@ -142,7 +142,7 @@ func NewController(
 		gameServerSynced:       gsInformer.HasSynced,
 		nodeLister:             kubeInformerFactory.Core().V1().Nodes().Lister(),
 		nodeSynced:             kubeInformerFactory.Core().V1().Nodes().Informer().HasSynced,
-		portAllocator:          controllerHooks.NewPortAllocator(minPort, maxPort, kubeInformerFactory, agonesInformerFactory),
+		portAllocator:          controllerHooks.NewPortAllocator(minPort, maxPort, portPools, kubeInformerFactory, agonesInformerFactory),
 		healthController:       NewHealthController(health, kubeClient, agonesClient, kubeInformerFactory, agonesInformerFactory, controllerHooks.WaitOnFreePorts()),
 		migrationController:    NewMigrationController(health, kubeClient, agonesClient, kubeInformerFactory, agonesInformerFactory, controllerHooks.SyncPodPortsToGameServer),
 		missingPodController:   NewMissingPodController(health, kubeClient, agonesClient, kubeInformerFactory, agonesInformerFactory),

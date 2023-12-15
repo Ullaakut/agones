@@ -47,8 +47,9 @@ func TestPortAllocatorAllocate(t *testing.T) {
 	fixture := dynamicGameServerFixture()
 
 	t.Run("test allocated port counts", func(t *testing.T) {
+		testPools := []PortPool{{"", 10, 50}}
 		m := agtesting.NewMocks()
-		pa := newAllocator(10, 50, m.KubeInformerFactory, m.AgonesInformerFactory)
+		pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 		nodeWatch := watch.NewFake()
 		m.KubeClient.AddWatchReactor("nodes", k8stesting.DefaultWatchReactor(nodeWatch, nil))
 
@@ -136,8 +137,9 @@ func TestPortAllocatorAllocate(t *testing.T) {
 	})
 
 	t.Run("ports are all allocated", func(t *testing.T) {
+		testPools := []PortPool{{"", 10, 20}}
 		m := agtesting.NewMocks()
-		pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+		pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 		nodeWatch := watch.NewFake()
 		m.KubeClient.AddWatchReactor("nodes", k8stesting.DefaultWatchReactor(nodeWatch, nil))
 
@@ -170,10 +172,9 @@ func TestPortAllocatorAllocate(t *testing.T) {
 	})
 
 	t.Run("ports are all allocated with multiple ports per GameServers", func(t *testing.T) {
+		testPools := []PortPool{{"", 10, 20}}
 		m := agtesting.NewMocks()
-		minPort := int32(10)
-		maxPort := int32(20)
-		pa := newAllocator(minPort, maxPort, m.KubeInformerFactory, m.AgonesInformerFactory)
+		pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 		nodeWatch := watch.NewFake()
 		m.KubeClient.AddWatchReactor("nodes", k8stesting.DefaultWatchReactor(nodeWatch, nil))
 
@@ -215,7 +216,7 @@ func TestPortAllocatorAllocate(t *testing.T) {
 
 				for _, p := range gs.Spec.Ports {
 					if p.PortPolicy == agonesv1.Dynamic || p.PortPolicy == agonesv1.Passthrough {
-						assert.True(t, 10 <= p.HostPort && p.HostPort <= maxPort, "%v is not between 10 and 20", p)
+						assert.True(t, 10 <= p.HostPort && p.HostPort <= testPools[0].Max, "%v is not between 10 and 20", p)
 					}
 				}
 			}
@@ -239,9 +240,10 @@ func TestPortAllocatorAllocate(t *testing.T) {
 	})
 
 	t.Run("ports are unique in a node", func(t *testing.T) {
+		testPools := []PortPool{{"", 10, 20}}
 		fixture := dynamicGameServerFixture()
 		m := agtesting.NewMocks()
-		pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+		pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 
 		m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 			nl := &corev1.NodeList{Items: []corev1.Node{n1}}
@@ -263,8 +265,9 @@ func TestPortAllocatorAllocate(t *testing.T) {
 	})
 
 	t.Run("portPolicy as an empty string", func(t *testing.T) {
+		testPools := []PortPool{{"", 10, 50}}
 		m := agtesting.NewMocks()
-		pa := newAllocator(10, 50, m.KubeInformerFactory, m.AgonesInformerFactory)
+		pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 		nodeWatch := watch.NewFake()
 		m.KubeClient.AddWatchReactor("nodes", k8stesting.DefaultWatchReactor(nodeWatch, nil))
 
@@ -290,9 +293,10 @@ func TestPortAllocatorAllocate(t *testing.T) {
 }
 
 func TestPortAllocatorMultithreadAllocate(t *testing.T) {
+	testPools := []PortPool{{"", 10, 20}}
 	fixture := dynamicGameServerFixture()
 	m := agtesting.NewMocks()
-	pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 
 	m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		nl := &corev1.NodeList{Items: []corev1.Node{n1, n2}}
@@ -329,9 +333,10 @@ func TestPortAllocatorMultithreadAllocate(t *testing.T) {
 func TestPortAllocatorDeAllocate(t *testing.T) {
 	t.Parallel()
 
+	testPools := []PortPool{{"", 10, 20}}
 	fixture := dynamicGameServerFixture()
 	m := agtesting.NewMocks()
-	pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 	nodes := []corev1.Node{n1, n2, n3}
 	m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		nl := &corev1.NodeList{Items: nodes}
@@ -371,8 +376,9 @@ func TestPortAllocatorDeAllocate(t *testing.T) {
 func TestPortAllocatorSyncPortAllocations(t *testing.T) {
 	t.Parallel()
 
+	testPools := []PortPool{{"", 10, 20}}
 	m := agtesting.NewMocks()
-	pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 
 	m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		nl := &corev1.NodeList{Items: []corev1.Node{n1, n2, n3}}
@@ -463,7 +469,8 @@ func TestPortAllocatorSyncDeleteGameServer(t *testing.T) {
 		},
 		Status: agonesv1.GameServerStatus{State: agonesv1.GameServerStateReady, Ports: []agonesv1.GameServerStatusPort{{Port: 10}}, NodeName: n2.ObjectMeta.Name}}
 
-	pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+	testPools := []PortPool{{"", 10, 20}}
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 
 	m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		nl := &corev1.NodeList{Items: []corev1.Node{n1, n2, n3}}
@@ -521,8 +528,9 @@ func TestPortAllocatorSyncDeleteGameServer(t *testing.T) {
 func TestNodePortAllocation(t *testing.T) {
 	t.Parallel()
 
+	testPools := []PortPool{{"", 10, 20}}
 	m := agtesting.NewMocks()
-	pa := newAllocator(10, 20, m.KubeInformerFactory, m.AgonesInformerFactory)
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 	nodes := []corev1.Node{n1, n2, n3}
 	m.KubeClient.AddReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		nl := &corev1.NodeList{Items: nodes}
@@ -533,9 +541,11 @@ func TestNodePortAllocation(t *testing.T) {
 	for _, n := range nodes {
 		ports, ok := result[n.ObjectMeta.Name]
 		assert.True(t, ok, "Should have a port allocation for %s", n.ObjectMeta.Name)
-		assert.Len(t, ports, 11)
-		for _, v := range ports {
-			assert.False(t, v)
+		assert.Len(t, ports[""], 11)
+		for _, pool := range ports {
+			for _, v := range pool {
+				assert.False(t, v)
+			}
 		}
 	}
 }
@@ -543,12 +553,16 @@ func TestNodePortAllocation(t *testing.T) {
 func TestTakePortAllocation(t *testing.T) {
 	t.Parallel()
 
-	fixture := []portAllocation{{1: false, 2: false}, {1: false, 2: false}, {1: false, 3: false}}
+	fixture := []poolAllocation{
+		{"": {1: false, 2: false}},
+		{"": {1: false, 2: false}},
+		{"": {1: false, 2: false}},
+	}
 	result := setPortAllocation(2, fixture, true)
-	assert.True(t, result[0][2])
+	assert.True(t, result[0][""][2])
 
-	for i, row := range fixture {
-		for p, taken := range row {
+	for i, pool := range fixture {
+		for p, taken := range pool[""] {
 			if i != 0 && p != 2 {
 				assert.False(t, taken, fmt.Sprintf("row %d and port %d should be false", i, p))
 			}
@@ -558,8 +572,9 @@ func TestTakePortAllocation(t *testing.T) {
 
 func TestPortAllocatorRegisterExistingGameServerPorts(t *testing.T) {
 	t.Parallel()
+	testPools := []PortPool{{"", 10, 13}}
 	m := agtesting.NewMocks()
-	pa := newAllocator(10, 13, m.KubeInformerFactory, m.AgonesInformerFactory)
+	pa := newAllocator(testPools, m.KubeInformerFactory, m.AgonesInformerFactory)
 
 	gs1 := &agonesv1.GameServer{ObjectMeta: metav1.ObjectMeta{Name: "gs1", UID: "1"},
 		Spec: agonesv1.GameServerSpec{
@@ -588,9 +603,9 @@ func TestPortAllocatorRegisterExistingGameServerPorts(t *testing.T) {
 	allocations, nonReadyNodesPorts := pa.registerExistingGameServerPorts([]*agonesv1.GameServer{gs1, gs2, gs3, gs4}, []*corev1.Node{&n1, &n2, &n3}, map[types.UID]bool{})
 
 	assert.Equal(t, []int32{13}, nonReadyNodesPorts)
-	assert.Equal(t, portAllocation{10: true, 11: false, 12: true, 13: false}, allocations[0])
-	assert.Equal(t, portAllocation{10: false, 11: true, 12: false, 13: false}, allocations[1])
-	assert.Equal(t, portAllocation{10: false, 11: false, 12: false, 13: false}, allocations[2])
+	assert.Equal(t, poolAllocation{"": {10: true, 11: false, 12: true, 13: false}}, allocations[0])
+	assert.Equal(t, poolAllocation{"": {10: false, 11: true, 12: false, 13: false}}, allocations[1])
+	assert.Equal(t, poolAllocation{"": {10: false, 11: false, 12: false, 13: false}}, allocations[2])
 }
 
 func dynamicGameServerFixture() *agonesv1.GameServer {
@@ -605,9 +620,11 @@ func dynamicGameServerFixture() *agonesv1.GameServer {
 // allocated across nodes
 func countAllocatedPorts(pa *portAllocator, p int32) int {
 	count := 0
-	for _, node := range pa.portAllocations {
-		if node[p] {
-			count++
+	for _, pool := range pa.portAllocations {
+		for _, alloc := range pool {
+			if alloc[p] {
+				count++
+			}
 		}
 	}
 	return count
@@ -616,10 +633,12 @@ func countAllocatedPorts(pa *portAllocator, p int32) int {
 // countTotalAllocatedPorts counts the total number of allocated ports
 func countTotalAllocatedPorts(pa *portAllocator) int {
 	count := 0
-	for _, node := range pa.portAllocations {
-		for _, alloc := range node {
-			if alloc {
-				count++
+	for _, pool := range pa.portAllocations {
+		for _, node := range pool {
+			for _, alloc := range node {
+				if alloc {
+					count++
+				}
 			}
 		}
 	}

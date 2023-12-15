@@ -1450,12 +1450,15 @@ func TestGameServerCountPorts(t *testing.T) {
 		{PortPolicy: Static},
 	}}}
 
-	assert.Equal(t, 3, fixture.CountPorts(func(policy PortPolicy) bool {
+	_, count := fixture.CountPorts(func(policy PortPolicy) bool {
 		return policy == Dynamic
-	}))
-	assert.Equal(t, 1, fixture.CountPorts(func(policy PortPolicy) bool {
+	})
+	assert.Equal(t, 3, count)
+
+	_, count = fixture.CountPorts(func(policy PortPolicy) bool {
 		return policy == Static
-	}))
+	})
+	assert.Equal(t, 1, count)
 }
 
 func TestGameServerPatch(t *testing.T) {

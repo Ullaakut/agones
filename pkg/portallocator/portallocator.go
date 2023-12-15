@@ -49,17 +49,29 @@ type Interface interface {
 	DeAllocate(gs *agonesv1.GameServer)
 }
 
+// PortPool is a named count of ports for allocate from.
+type PortPool struct {
+	// Name of the pool.
+	Name string
+	// Min is the lowest port number for that pool.
+	Min int32
+	// Max is the lowest port number for that pool.
+	Max int32
+}
+
 // A set of port allocations for a node
 type portAllocation map[int32]bool
+
+// A set of node allocations for a pool.
+type poolAllocation map[string]portAllocation
 
 //nolint:govet // ignore fieldalignment, singleton
 type portAllocator struct {
 	logger             *logrus.Entry
 	mutex              sync.RWMutex
-	portAllocations    []portAllocation
+	portPools          []PortPool
+	portAllocations    []poolAllocation // []map[poolName]map[port]bool
 	gameServerRegistry map[types.UID]bool
-	minPort            int32
-	maxPort            int32
 	gameServerSynced   cache.InformerSynced
 	gameServerLister   listerv1.GameServerLister
 	gameServerInformer cache.SharedIndexInformer
@@ -71,13 +83,13 @@ type portAllocator struct {
 // New returns a new dynamic port allocator. minPort and maxPort are the
 // top and bottom portAllocations that can be allocated in the range for
 // the game servers.
-func New(minPort, maxPort int32,
+func New(pools []PortPool,
 	kubeInformerFactory informers.SharedInformerFactory,
 	agonesInformerFactory externalversions.SharedInformerFactory) Interface {
-	return newAllocator(minPort, maxPort, kubeInformerFactory, agonesInformerFactory)
+	return newAllocator(pools, kubeInformerFactory, agonesInformerFactory)
 }
 
-func newAllocator(minPort, maxPort int32,
+func newAllocator(pools []PortPool,
 	kubeInformerFactory informers.SharedInformerFactory,
 	agonesInformerFactory externalversions.SharedInformerFactory) *portAllocator {
 	v1 := kubeInformerFactory.Core().V1()
@@ -86,8 +98,7 @@ func newAllocator(minPort, maxPort int32,
 
 	pa := &portAllocator{
 		mutex:              sync.RWMutex{},
-		minPort:            minPort,
-		maxPort:            maxPort,
+		portPools:          pools,
 		gameServerRegistry: map[types.UID]bool{},
 		gameServerSynced:   gameServers.Informer().HasSynced,
 		gameServerLister:   gameServers.Lister(),
@@ -102,7 +113,10 @@ func newAllocator(minPort, maxPort int32,
 		DeleteFunc: pa.syncDeleteGameServer,
 	})
 
-	pa.logger.WithField("minPort", minPort).WithField("maxPort", maxPort).Debug("Starting")
+	for _, pool := range pools {
+		pa.logger.WithField("poolName", pool.Name).WithField("min", pool.Min).WithField("max", pool.Max).Debug("Using port pool")
+	}
+	pa.logger.Debug("Starting")
 	return pa
 }
 
@@ -136,19 +150,23 @@ func (pa *portAllocator) Allocate(gs *agonesv1.GameServer) *agonesv1.GameServer 
 	// we only want this to be called inside the mutex lock
 	// so let's define the function here so it can never be called elsewhere.
 	// Also the return gives an escape from the double loop
-	findOpenPorts := func(amount int) []pn {
-		var ports []pn
-		if amount <= 0 {
-			return ports
+	findOpenPorts := func(pool string, count int) []pn {
+		if count <= 0 {
+			return []pn{}
 		}
-		for _, n := range pa.portAllocations {
-			for p, taken := range n {
-				if !taken {
-					ports = append(ports, pn{pa: n, port: p})
-					// only allocate as many ports as are asked for by the GameServer
-					if len(ports) == amount {
-						return ports
-					}
+
+		var ports []pn
+		for _, allocs := range pa.portAllocations {
+			for p, taken := range allocs[pool] {
+				if taken {
+					continue
+				}
+
+				ports = append(ports, pn{pa: allocs[pool], port: p})
+
+				// Once a pool has enough ports allocated, move on to next pool.
+				if len(ports) == count {
+					break
 				}
 			}
 		}
@@ -158,12 +176,18 @@ func (pa *portAllocator) Allocate(gs *agonesv1.GameServer) *agonesv1.GameServer 
 	// this allows us to do recursion, within the mutex lock
 	var allocate func(gs *agonesv1.GameServer) *agonesv1.GameServer
 	allocate = func(gs *agonesv1.GameServer) *agonesv1.GameServer {
-		amount := gs.CountPorts(func(policy agonesv1.PortPolicy) bool {
+		pools := gs.CountPorts(func(policy agonesv1.PortPolicy) bool {
 			return policy == agonesv1.Dynamic || policy == agonesv1.Passthrough
 		})
-		allocations := findOpenPorts(amount)
+		allocations := make(map[string][]pn, len(pools))
+		var want, got int
+		for name, count := range pools {
+			allocations[name] = findOpenPorts(name, count)
+			want += count
+			got += len(allocations[name])
+		}
 
-		if len(allocations) == amount {
+		if got >= want {
 			pa.gameServerRegistry[gs.ObjectMeta.UID] = true
 
 			var extraPorts []agonesv1.GameServerPort
@@ -172,9 +196,14 @@ func (pa *portAllocator) Allocate(gs *agonesv1.GameServer) *agonesv1.GameServer 
 				if p.PortPolicy != agonesv1.Dynamic && p.PortPolicy != agonesv1.Passthrough {
 					continue
 				}
-				// pop off allocation
+
+				if _, ok := allocations[p.Pool]; !ok {
+					pa.logger.Error("Unknown pool name found on game server port, using generic pool instead")
+				}
+				// pop off allocation for matching pool.
 				var a pn
-				a, allocations = allocations[0], allocations[1:]
+				a, allocations[p.Pool] = allocations[p.Pool][0], allocations[p.Pool][1:]
+
 				a.pa[a.port] = true
 				gs.Spec.Ports[i].HostPort = a.port
 
@@ -212,7 +241,7 @@ func (pa *portAllocator) Allocate(gs *agonesv1.GameServer) *agonesv1.GameServer 
 		// this is important, because to autoscale scale up, we create GameServers that
 		// can't be scheduled on the current set of nodes, so we need to be sure
 		// there are always ports available to be allocated.
-		pa.portAllocations = append(pa.portAllocations, pa.newPortAllocation())
+		pa.portAllocations = append(pa.portAllocations, pa.newPoolAllocation())
 
 		return allocate(gs)
 	}
@@ -242,9 +271,17 @@ func (pa *portAllocator) DeAllocate(gs *agonesv1.GameServer) {
 	pa.mutex.Lock()
 	defer pa.mutex.Unlock()
 	for _, p := range gs.Spec.Ports {
-		if p.HostPort < pa.minPort || p.HostPort > pa.maxPort {
+		match := false
+		for _, pool := range pa.portPools {
+			if p.HostPort >= pool.Min && p.HostPort <= pool.Max {
+				match = true
+				break
+			}
+		}
+		if !match {
 			continue
 		}
+
 		pa.portAllocations = setPortAllocation(p.HostPort, pa.portAllocations, false)
 	}
 
@@ -304,7 +341,7 @@ func (pa *portAllocator) syncAll() error {
 // registerExistingGameServerPorts registers the gameservers against gsRegistry and the ports against nodePorts.
 // and returns an ordered list of portAllocations per cluster nodes, and an array of
 // any GameServers allocated a port, but not yet assigned a Node will returned as an array of port values.
-func (pa *portAllocator) registerExistingGameServerPorts(gameservers []*agonesv1.GameServer, nodes []*corev1.Node, gsRegistry map[types.UID]bool) ([]portAllocation, []int32) {
+func (pa *portAllocator) registerExistingGameServerPorts(gameservers []*agonesv1.GameServer, nodes []*corev1.Node, gsRegistry map[types.UID]bool) ([]poolAllocation, []int32) {
 	// setup blank port values
 	nodePortAllocation := pa.nodePortAllocation(nodes)
 	nodePortCount := make(map[string]int64, len(nodes))
@@ -321,10 +358,18 @@ func (pa *portAllocator) registerExistingGameServerPorts(gameservers []*agonesv1
 			}
 			gsRegistry[gs.ObjectMeta.UID] = true
 
+			var poolName string
+			for _, pool := range pa.portPools {
+				if pool.Min <= p.HostPort && p.HostPort <= pool.Max {
+					poolName = pool.Name
+					break
+				}
+			}
+
 			// if the node doesn't exist, it's likely unscheduled
 			_, ok := nodePortAllocation[gs.Status.NodeName]
 			if gs.Status.NodeName != "" && ok {
-				nodePortAllocation[gs.Status.NodeName][p.HostPort] = true
+				nodePortAllocation[gs.Status.NodeName][poolName][p.HostPort] = true
 				nodePortCount[gs.Status.NodeName]++
 			} else if p.HostPort != 0 {
 				nonReadyNodesPorts = append(nonReadyNodesPorts, p.HostPort)
@@ -339,16 +384,15 @@ func (pa *portAllocator) registerExistingGameServerPorts(gameservers []*agonesv1
 	}
 
 	// sort, since this is how it would have originally been allocated across the
-	// ordered []portAllocation
+	// ordered []poolAllocation
 	sort.Slice(keys, func(i, j int) bool {
 		return nodePortCount[keys[i]] > nodePortCount[keys[j]]
 	})
 
 	// this gives us back an ordered node list
-	allocations := make([]portAllocation, len(nodePortAllocation))
+	allocations := make([]poolAllocation, len(nodePortAllocation))
 	for i, k := range keys {
 		allocations[i] = nodePortAllocation[k]
-
 	}
 
 	return allocations, nonReadyNodesPorts
@@ -356,34 +400,41 @@ func (pa *portAllocator) registerExistingGameServerPorts(gameservers []*agonesv1
 
 // nodePortAllocation returns a map of port allocations all set to being available
 // with a map key for each node, as well as the node registry record (since we're already looping)
-func (pa *portAllocator) nodePortAllocation(nodes []*corev1.Node) map[string]portAllocation {
-	nodePorts := map[string]portAllocation{}
+func (pa *portAllocator) nodePortAllocation(nodes []*corev1.Node) map[string]poolAllocation {
+	nodePorts := map[string]poolAllocation{}
 
 	for _, n := range nodes {
 		// ignore unschedulable nodes
 		if !n.Spec.Unschedulable {
-			nodePorts[n.Name] = pa.newPortAllocation()
+			nodePorts[n.Name] = pa.newPoolAllocation()
 		}
 	}
 
 	return nodePorts
 }
 
-func (pa *portAllocator) newPortAllocation() portAllocation {
-	p := make(portAllocation, (pa.maxPort-pa.minPort)+1)
-	for i := pa.minPort; i <= pa.maxPort; i++ {
-		p[i] = false
+func (pa *portAllocator) newPoolAllocation() poolAllocation {
+	p := make(poolAllocation, len(pa.portPools))
+	for _, pool := range pa.portPools {
+		ports := make(portAllocation, (pool.Max-pool.Min)+1)
+		for i := pool.Min; i <= pool.Max; i++ {
+			ports[i] = false
+		}
+
+		p[pool.Name] = ports
 	}
 
 	return p
 }
 
 // setPortAllocation takes a port from an all
-func setPortAllocation(port int32, allocations []portAllocation, taken bool) []portAllocation {
-	for _, np := range allocations {
-		if np[port] != taken {
-			np[port] = taken
-			break
+func setPortAllocation(port int32, allocations []poolAllocation, taken bool) []poolAllocation {
+	for _, pool := range allocations {
+		for _, np := range pool {
+			if np[port] != taken {
+				np[port] = taken
+				return allocations
+			}
 		}
 	}
 	return allocations

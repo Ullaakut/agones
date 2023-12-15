@@ -249,6 +249,8 @@ type Health struct {
 type GameServerPort struct {
 	// Name is the descriptive name of the port
 	Name string `json:"name,omitempty"`
+	// Pool is the name of the port pool to which this port belongs.
+	Pool string `json:"pool,omitempty"`
 	// PortPolicy defines the policy for how the HostPort is populated.
 	// Dynamic port will allocate a HostPort within the selected MIN_PORT and MAX_PORT range passed to the controller
 	// at installation time.
@@ -886,21 +888,21 @@ func (gs *GameServer) HasPortPolicy(policy PortPolicy) bool {
 	return false
 }
 
-// Status returns a GameServerSatusPort for this GameServerPort
+// Status returns a GameServerStatusPort for this GameServerPort
 func (p GameServerPort) Status() GameServerStatusPort {
 	return GameServerStatusPort{Name: p.Name, Port: p.HostPort}
 }
 
 // CountPorts returns the number of
 // ports that match condition function
-func (gs *GameServer) CountPorts(f func(policy PortPolicy) bool) int {
-	count := 0
+func (gs *GameServer) CountPorts(f func(policy PortPolicy) bool) map[string]int {
+	pools := make(map[string]int)
 	for _, p := range gs.Spec.Ports {
 		if f(p.PortPolicy) {
-			count++
+			pools[p.Name]++
 		}
 	}
-	return count
+	return pools
 }
 
 // Patch creates a JSONPatch to move the current GameServer
